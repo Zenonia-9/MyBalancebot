@@ -26,7 +26,9 @@ async def start(update, context):
     if user_id not in ALLOWED_USERS:
         return
     await update.message.reply_text(
-        "👋 Welcome! Use /in, /out, /balance, /history, /delete, /summary, /export to track your money."
+        """👋 Welcome aboard!
+Track, manage, and review your finances in seconds.
+Available commands: /in /out /balance /history /delete /summary /export /import"""
     )
 app.add_handler(CommandHandler("start", start))
 
