@@ -69,6 +69,20 @@ class FinanceDB:
         conn.close()
         return balance
 
+    def get_transaction(self, user_id: int, t_id: int):
+        conn = self.get_connection()
+        cursor = conn.cursor()
+
+        cursor.execute("""
+            SELECT id, type, amount, note, created_at
+            FROM transactions
+            WHERE user_id=? AND id=?
+        """, (user_id, t_id))
+
+        row = cursor.fetchone()
+        conn.close()
+        return row
+    
     def get_history(self, user_id: int, limit: int = 20, offset: int = 0):
         conn = self.get_connection()
         cursor = conn.cursor()

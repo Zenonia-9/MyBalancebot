@@ -11,6 +11,7 @@ from config import ALLOWED_USERS
 db = FinanceDB()
 # Max history entries to show
 PAGE_SIZE = 20
+DEL_PAGE_SIZE = 10
 
 EXPECTED_HEADERS = {"id", "type", "amount", "note", "created_at"}
 
@@ -186,30 +187,178 @@ async def history_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await query.edit_message_text(msg, parse_mode="HTML", reply_markup=reply_markup)
 
-async def handle_delete(update, context):
+async def send_delete_page(message, user_id, page, selected_id=None):
+    offset = page * DEL_PAGE_SIZE
+    history = db.get_history(user_id, DEL_PAGE_SIZE, offset)
+
+    if not history:
+        await message.reply_text("No transactions found.")
+        return
+
+    msg = f"🗑 <b>Select transaction</b>\n📄 Page {page+1}"
+
+    keyboard = []
+
+    for t in history:
+        t_id, t_type, amount, note, created_at = t
+
+        icon = "💰" if t_type == "in" else "💸"
+        note = note or "-"
+        short_note = note[:10] + "..." if len(note) > 10 else ""
+
+        text = f"{icon} {format_amount_shorthand(amount)} {short_note} {format_mm_datetime(created_at)}"
+
+        # 🌟 highlight selected
+        if selected_id == t_id:
+            text = "👉 " + text
+
+        keyboard.append([
+            InlineKeyboardButton(text, callback_data=f"delpick_{t_id}_{page}")
+        ])
+
+    # navigation + cancel
+    nav_buttons = []
+
+    if page > 0:
+        nav_buttons.append(InlineKeyboardButton("⬅️", callback_data=f"delpage_{page-1}"))
+
+    if len(history) == DEL_PAGE_SIZE:
+        nav_buttons.append(InlineKeyboardButton("➡️", callback_data=f"delpage_{page+1}"))
+
+    # ❌ cancel all button
+    nav_buttons.append(InlineKeyboardButton("❌ Cancel", callback_data="delcancel"))
+
+    keyboard.append(nav_buttons)
+
+    reply_markup = InlineKeyboardMarkup(keyboard)
+
+    await message.reply_text(msg, parse_mode="HTML", reply_markup=reply_markup)
+
+async def handle_delete(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     if not is_allowed(user_id):
         return
 
-    if not context.args:
-        await update.message.reply_text("Usage: /delete <transaction_id>")
+    # 👉 If ID is provided → go to confirm directly
+    if context.args:
+        try:
+            t_id = int(context.args[0])
+
+            tx = db.get_transaction(user_id, t_id)
+
+            if not tx:
+                await update.message.reply_text(f"❌ Transaction {t_id} not found")
+                return
+
+            _, t_type, amount, note, created_at = tx
+
+            icon = "💰" if t_type == "in" else "💸"
+
+            msg = (
+                f"⚠️ <b>Confirm Delete</b>\n\n"
+                f"{icon} {int(amount)} MMK\n"
+                f"{note or '-'}\n"
+                f"{format_mm_datetime(created_at)}"
+            )
+
+            keyboard = [
+                [
+                    InlineKeyboardButton("✅ Delete", callback_data=f"delconfirm_{t_id}_0"),
+                    InlineKeyboardButton("❌ Cancel", callback_data="delcancel")
+                ]
+            ]
+
+            await update.message.reply_text(
+                msg,
+                parse_mode="HTML",
+                reply_markup=InlineKeyboardMarkup(keyboard)
+            )
+
+        except ValueError:
+            await update.message.reply_text("Transaction ID must be a number")
+
         return
 
-    try:
-        t_id = int(context.args[0])
-        # Delete only if belongs to this user
+    # 👉 No args → normal UI
+    await send_delete_page(update.message, user_id, page=0)
+
+async def delete_ui_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    user_id = query.from_user.id
+    data = query.data
+
+    # 📄 Pagination
+    if data.startswith("delpage_"):
+        page = int(data.split("_")[1])
+        await query.delete_message()
+        await send_delete_page(query.message, user_id, page)
+
+    # 🎯 Pick transaction (highlight + show confirm)
+    elif data.startswith("delpick_"):
+        _, t_id, page = data.split("_")
+        t_id = int(t_id)
+        page = int(page)
+
+        tx = db.get_transaction(user_id, t_id)
+
+        if not tx:
+            await query.answer("Transaction not found", show_alert=True)
+            return
+
+        _, t_type, amount, note, created_at = tx
+
+        icon = "💰" if t_type == "in" else "💸"
+
+        msg = (
+            f"⚠️ <b>Confirm Delete</b>\n\n"
+            f"{icon} {int(amount)} MMK\n"
+            f"{note or '-'}\n"
+            f"{format_mm_datetime(created_at)}"
+        )
+
+        keyboard = [
+            [
+                InlineKeyboardButton("✅ Delete", callback_data=f"delconfirm_{t_id}_{page}"),
+                InlineKeyboardButton("⬅️ Back", callback_data=f"delback_{page}_{t_id}")
+            ]
+        ]
+
+        await query.edit_message_text(msg, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(keyboard))
+
+    # 🔙 Back to list (with highlight)
+    elif data.startswith("delback_"):
+        _, page, selected_id = data.split("_")
+        await query.delete_message()
+        await send_delete_page(query.message, user_id, int(page), int(selected_id))
+
+    # 💣 Confirm delete
+    elif data.startswith("delconfirm_"):
+        _, t_id, page = data.split("_")
+        t_id = int(t_id)
+        page = int(page)
+
         conn = db.get_connection()
         cursor = conn.cursor()
-        cursor.execute("DELETE FROM transactions WHERE id=? AND user_id=?", (t_id, user_id))
-        if cursor.rowcount == 0:
-            await update.message.reply_text(f"No transaction found with ID {t_id}")
-        else:
-            await update.message.reply_text(f"✅ Transaction {t_id} deleted")
+
+        cursor.execute(
+            "DELETE FROM transactions WHERE id=? AND user_id=?",
+            (t_id, user_id)
+        )
+
         conn.commit()
         conn.close()
-    except ValueError:
-        await update.message.reply_text("Transaction ID must be a number")
 
+        await query.answer("Deleted ✅")
+
+        await query.delete_message()
+        await send_delete_page(query.message, user_id, page)
+
+    # ❌ Cancel all
+    elif data == "delcancel":
+        await query.edit_message_text("❎ Cancelled")
+     
 async def handle_summary(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     if not is_allowed(user_id):

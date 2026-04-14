@@ -1,7 +1,7 @@
 import os
 from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandler, MessageHandler, filters
 from config import ALLOWED_USERS, BOT_TOKEN, WEBHOOK_URL, PORT
-from handlers import handle_income, handle_expense, handle_balance, handle_history, handle_delete, handle_summary, summary_callback, handle_export, handle_import, history_callback
+from handlers import handle_income, handle_expense, handle_balance, handle_history, handle_delete, handle_summary, summary_callback, handle_export, handle_import, history_callback, delete_ui_callback
 
 # Create bot application
 app = ApplicationBuilder().token(BOT_TOKEN).build()
@@ -13,6 +13,7 @@ app.add_handler(CommandHandler("balance", handle_balance))
 app.add_handler(CommandHandler("history", handle_history))
 app.add_handler(CallbackQueryHandler(history_callback, pattern="^history_"))
 app.add_handler(CommandHandler("delete", handle_delete))
+app.add_handler(CallbackQueryHandler(delete_ui_callback, pattern="^del"))
 app.add_handler(CommandHandler("summary", handle_summary))
 app.add_handler(CallbackQueryHandler(summary_callback, pattern="^summary_"))
 app.add_handler(CommandHandler("export", handle_export))
