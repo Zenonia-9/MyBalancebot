@@ -1,6 +1,6 @@
 import datetime
 
-from telegram import Update
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
 from db import FinanceDB
 from config import ALLOWED_USERS, HISTORY_LIMIT
@@ -63,7 +63,7 @@ async def handle_expense(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if not context.args:
-        await update.message.reply_text("Usage: /in <amount> <optional note>")
+        await update.message.reply_text("Usage: /out <amount> <optional note>")
         return
     
     try:
@@ -127,41 +127,167 @@ async def handle_delete(update, context):
     except ValueError:
         await update.message.reply_text("Transaction ID must be a number")
 
-async def handle_summary(update, context):
+async def handle_summary(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     if not is_allowed(user_id):
         return
 
-    period = context.args[0].lower() if context.args else "week"
+    args = context.args
     now = datetime.datetime.now()
+
+    # 👉 If no args → show buttons
+    if not args:
+        return await summary_menu(update, context)
+
     conn = db.get_connection()
     cursor = conn.cursor()
 
-    if period == "week":
-        start = now - datetime.timedelta(days=7)
-        title = "Last 7 days"
-    elif period == "month":
-        start = now - datetime.timedelta(days=30)
-        title = "Last 30 days"
+    query = """
+        SELECT 
+            COALESCE(SUM(CASE WHEN type='in' THEN amount ELSE 0 END),0),
+            COALESCE(SUM(CASE WHEN type='out' THEN amount ELSE 0 END),0)
+        FROM transactions
+        WHERE user_id=?
+    """
+
+    params = [user_id]
+    title = ""
+
+    # ======================
+    # YEARLY
+    # ======================
+    if args[0].lower() == "year":
+        if len(args) == 2:
+            year = int(args[1])
+            start = datetime.datetime(year, 1, 1)
+            end = datetime.datetime(year, 12, 31)
+            title = f"Year {year}"
+
+            query += " AND created_at BETWEEN ? AND ?"
+            params.extend([start, end])
+        else:
+            title = "All Time"
+
+    # ======================
+    # MONTHLY
+    # ======================
+    elif args[0].lower() == "month":
+        if len(args) >= 2:
+            try:
+                month = int(args[1])
+                year = int(args[2]) if len(args) == 3 else now.year
+
+                start = datetime.datetime(year, month, 1)
+
+                if month == 12:
+                    end = datetime.datetime(year + 1, 1, 1)
+                else:
+                    end = datetime.datetime(year, month + 1, 1)
+
+                title = f"{start.strftime('%B %Y')}"
+
+                query += " AND created_at BETWEEN ? AND ?"
+                params.extend([start, end])
+
+            except:
+                await update.message.reply_text("Invalid month/year format.")
+                return
+        else:
+            await update.message.reply_text(
+                "Usage:\n"
+                "/summary month <month> [year]\n"
+                "Example: /summary month 4 2025"
+            )
+            return
+
     else:
-        await update.message.reply_text("Usage: /summary [week|month]")
+        await update.message.reply_text("Invalid usage.")
         return
 
-    cursor.execute("""
-        SELECT 
-            COALESCE(SUM(CASE WHEN type='in' THEN amount ELSE 0 END),0) AS total_in,
-            COALESCE(SUM(CASE WHEN type='out' THEN amount ELSE 0 END),0) AS total_out
-        FROM transactions
-        WHERE user_id=? AND created_at>=?
-    """, (user_id, start))
+    cursor.execute(query, params)
     total_in, total_out = cursor.fetchone()
     conn.close()
 
     balance = total_in - total_out
+
     msg = (
         f"📊 {title} Summary\n"
         f"💰 Income: {int(total_in)}\n"
         f"💸 Expenses: {int(total_out)}\n"
         f"💹 Net: {int(balance)}"
     )
+
     await update.message.reply_text(msg)
+
+async def summary_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    keyboard = [
+        [
+            InlineKeyboardButton("📅 This Month", callback_data="summary_month"),
+            InlineKeyboardButton("📆 This Year", callback_data="summary_year"),
+        ],
+        [
+            InlineKeyboardButton("📊 All Time", callback_data="summary_all"),
+        ]
+    ]
+
+    reply_markup = InlineKeyboardMarkup(keyboard)
+
+    await update.message.reply_text(
+        "Choose summary type:",
+        reply_markup=reply_markup
+    )
+
+async def summary_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query_cb = update.callback_query
+    await query_cb.answer()
+
+    user_id = query_cb.from_user.id
+    now = datetime.datetime.now()
+
+    conn = db.get_connection()
+    cursor = conn.cursor()
+
+    base_query = """
+        SELECT 
+            COALESCE(SUM(CASE WHEN type='in' THEN amount ELSE 0 END),0),
+            COALESCE(SUM(CASE WHEN type='out' THEN amount ELSE 0 END),0)
+        FROM transactions
+        WHERE user_id=?
+    """
+
+    params = [user_id]
+    title = ""
+
+    if query_cb.data == "summary_month":
+        start = now.replace(day=1)
+        end = now
+        title = now.strftime("%B %Y")
+
+        base_query += " AND created_at BETWEEN ? AND ?"
+        params.extend([start, end])
+
+    elif query_cb.data == "summary_year":
+        start = datetime.datetime(now.year, 1, 1)
+        end = datetime.datetime(now.year, 12, 31)
+        title = f"Year {now.year}"
+
+        base_query += " AND created_at BETWEEN ? AND ?"
+        params.extend([start, end])
+
+    elif query_cb.data == "summary_all":
+        title = "All Time"
+
+    cursor.execute(base_query, params)
+    total_in, total_out = cursor.fetchone()
+    conn.close()
+
+    balance = total_in - total_out
+
+    msg = (
+        f"📊 {title} Summary\n"
+        f"💰 Income: {int(total_in)}\n"
+        f"💸 Expenses: {int(total_out)}\n"
+        f"💹 Net: {int(balance)}"
+    )
+
+    await query_cb.edit_message_text(msg)
