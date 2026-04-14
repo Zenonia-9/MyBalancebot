@@ -1,11 +1,15 @@
 import datetime
 
+import csv
+import io
+
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
 from db import FinanceDB
 from config import ALLOWED_USERS, HISTORY_LIMIT
 
 db = FinanceDB()
+EXPECTED_HEADERS = {"id", "type", "amount", "note", "created_at"}
 
 # Check if user is allowed
 def is_allowed(user_id):
@@ -291,3 +295,139 @@ async def summary_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
     await query_cb.edit_message_text(msg)
+
+async def handle_export(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    if not is_allowed(user_id):
+        return
+
+    conn = db.get_connection()
+    cursor = conn.cursor()
+
+    cursor.execute("""
+        SELECT id, type, amount, note, created_at
+        FROM transactions
+        WHERE user_id=?
+        ORDER BY created_at ASC
+    """, (user_id,))
+
+    rows = cursor.fetchall()
+    conn.close()
+
+    if not rows:
+        await update.message.reply_text("No data to export.")
+        return
+
+    # 👉 Create CSV in memory
+    output = io.StringIO()
+    writer = csv.writer(output)
+
+    # Header
+    writer.writerow(["id", "type", "amount", "note", "created_at"])
+
+    # Data
+    writer.writerows(rows)
+
+    output.seek(0)
+
+    # 👉 Send as file
+    await update.message.reply_document(
+        document=io.BytesIO(output.getvalue().encode()),
+        filename="transactions_backup.csv",
+        caption="📦 Your backup file"
+    )
+
+
+async def handle_import(update, context):
+    user_id = update.effective_user.id
+    if not is_allowed(user_id):
+        return
+
+    if not update.message.document:
+        await update.message.reply_text("Please send a CSV file.")
+        return
+
+    file = await update.message.document.get_file()
+    file_bytes = await file.download_as_bytearray()
+
+    stream = io.StringIO(file_bytes.decode())
+    reader = csv.DictReader(stream)
+
+    # ======================
+    # 🔍 STEP 1: Validate headers
+    # ======================
+    headers = set(reader.fieldnames or [])
+    if headers != EXPECTED_HEADERS:
+        await update.message.reply_text(
+            "❌ Invalid CSV format.\n"
+            f"Expected columns: {', '.join(EXPECTED_HEADERS)}"
+        )
+        return
+
+    rows = list(reader)
+
+    if not rows:
+        await update.message.reply_text("❌ CSV file is empty.")
+        return
+
+    # ======================
+    # 🔍 STEP 2: Validate rows
+    # ======================
+    for i, row in enumerate(rows, start=1):
+        try:
+            if row["type"] not in ("in", "out"):
+                raise ValueError("type must be 'in' or 'out'")
+
+            float(row["amount"])  # validate number
+
+            if not row["created_at"]:
+                raise ValueError("created_at is required")
+
+        except Exception as e:
+            await update.message.reply_text(
+                f"❌ Error in row {i}:\n{str(e)}"
+            )
+            return
+
+    # ======================
+    # 💣 STEP 3: Safe to delete + import
+    # ======================
+    conn = db.get_connection()
+    cursor = conn.cursor()
+
+    try:
+        # 🗑 STEP 1: Delete old data ONLY after validation
+        cursor.execute("DELETE FROM transactions WHERE user_id=?", (user_id,))
+
+        # 📦 STEP 2: Prepare batch data
+        data = [
+            (
+                user_id,
+                row["type"],
+                float(row["amount"]),
+                row["note"],
+                row["created_at"]
+            )
+            for row in rows
+        ]
+
+        # ⚡ STEP 3: Bulk insert (faster + cheaper CPU)
+        cursor.executemany("""
+            INSERT INTO transactions (user_id, type, amount, note, created_at)
+            VALUES (?, ?, ?, ?, ?)
+        """, data)
+
+        conn.commit()
+
+        await update.message.reply_text(
+            f"✅ Import successful!\n"
+            f"🗑 Old data replaced\n"
+            f"📥 {len(data)} transactions imported"
+        )
+
+    except Exception as e:
+        conn.rollback()
+        await update.message.reply_text(f"❌ Import failed:\n{str(e)}")
+
+    finally:
+        conn.close()
