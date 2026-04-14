@@ -26,9 +26,19 @@ async def start(update, context):
     if user_id not in ALLOWED_USERS:
         return
     await update.message.reply_text(
-        """👋 Welcome aboard!
-Track, manage, and review your finances in seconds.
-Available commands: /in /out /balance /history /delete /summary /export /import"""
+        """👋 Welcome!  
+I’m here to help you effortlessly track your finances. Use the following commands to get started:
+
+- /in – Log an income  
+- /out – Record an expense  
+- /balance – Check your current balance  
+- /history – View your transaction history  
+- /delete – Remove a transaction  
+- /summary – Get a summary of your finances  
+- /export – Export your data  
+- /import – Import your data  
+
+Let’s take control of your money—one step at a time. 💼✨"""
     )
 app.add_handler(CommandHandler("start", start))
 
