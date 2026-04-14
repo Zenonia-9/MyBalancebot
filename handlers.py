@@ -104,7 +104,7 @@ async def handle_balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_allowed(user_id):
         return
     balance = db.get_balance(user_id)
-    await update.message.reply_text(f"💹 Your balance is: {balance}")
+    await update.message.reply_text(f"💹 Your balance is: {balance:,.2f}")
 
 # /history command
 async def send_history_page(message, user_id, page):
@@ -444,9 +444,9 @@ async def handle_summary(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     msg = (
         f"📊 {title} Summary\n"
-        f"💰 Income: {int(total_in)}\n"
-        f"💸 Expenses: {int(total_out)}\n"
-        f"💹 Net: {int(balance)}"
+        f"💰 Income: {f"{total_in:,.2f}"}\n"
+        f"💸 Expenses: {f"{total_out:,.2f}"}\n"
+        f"💹 Net: {f"{balance:,.2f}"}"
     )
 
     await update.message.reply_text(msg)
@@ -517,9 +517,9 @@ async def summary_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     msg = (
         f"📊 {title} Summary\n"
-        f"💰 Income: {int(total_in)}\n"
-        f"💸 Expenses: {int(total_out)}\n"
-        f"💹 Net: {int(balance)}"
+        f"💰 Income: {f"{total_in:,.2f}"}\n"
+        f"💸 Expenses: {f"{total_out:,.2f}"}\n"
+        f"💹 Net: {f"{balance:,.2f}"}"
     )
 
     await query_cb.edit_message_text(msg)

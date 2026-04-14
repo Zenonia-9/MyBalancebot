@@ -9,7 +9,20 @@ notes = [
     "Electricity bill", "Mobile data", "Movie", "Book", "Donation"
 ]
 
-start_time = datetime(2026, 1, 1, 8, 0, 0)
+def random_date():
+    # 📅 last 3 years
+    start_year = datetime.now().year - 3
+    end_year = datetime.now().year
+
+    year = random.randint(start_year, end_year)
+    month = random.randint(1, 12)
+    day = random.randint(1, 28)  # safe for all months
+
+    hour = random.randint(0, 23)
+    minute = random.randint(0, 59)
+    second = random.randint(0, 59)
+
+    return datetime(year, month, day, hour, minute, second)
 
 rows = []
 
@@ -20,11 +33,10 @@ for i in range(1, 1001):
 
     note = random.choice(notes)
 
-    # occasional detailed notes like yours
     if random.random() < 0.1:
         note += f" #{random.randint(1, 999)}"
 
-    created_at = start_time + timedelta(minutes=i * random.randint(1, 5))
+    created_at = random_date()
 
     rows.append([
         i,
@@ -34,11 +46,11 @@ for i in range(1, 1001):
         created_at.strftime("%Y-%m-%d %H:%M:%S")
     ])
 
-filename = "demo/demo_transactions_1k.csv"
+filename = "demo/demo_transactions_3y.csv"
 
 with open(filename, "w", newline="", encoding="utf-8") as f:
     writer = csv.writer(f)
     writer.writerow(["id", "type", "amount", "note", "created_at"])
     writer.writerows(rows)
 
-print(f"Generated {filename} with 1000 rows 🚀")
+print(f"Generated {filename} with 1000 realistic multi-year rows 🚀")
