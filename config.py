@@ -18,6 +18,3 @@ def parse_allowed_users():
     return [int(uid.strip()) for uid in raw.split(",") if uid.strip()]
 
 ALLOWED_USERS = parse_allowed_users()
-
-# Max history entries to show
-HISTORY_LIMIT = 20

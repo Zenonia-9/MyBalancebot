@@ -1,4 +1,4 @@
-import datetime
+from datetime import datetime, timedelta
 
 import csv
 import io
@@ -6,13 +6,16 @@ import io
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
 from db import FinanceDB
-from config import ALLOWED_USERS, HISTORY_LIMIT
+from config import ALLOWED_USERS
 
 db = FinanceDB()
+# Max history entries to show
+PAGE_SIZE = 20
+
 EXPECTED_HEADERS = {"id", "type", "amount", "note", "created_at"}
 
 # Check if user is allowed
-def is_allowed(user_id):
+def is_allowed(user_id) -> bool:
     return user_id in ALLOWED_USERS
 
 def parse_amount(amount_input) -> float:
@@ -35,7 +38,22 @@ def format_amount_shorthand(amount: float) -> str:
         return f"{value:.2f}k" if value % 1 else f"{int(value)}k"
     else:
         return f"{int(amount)}"
-       
+
+def format_mm_datetime(dt_str):
+    # Parse DB timestamp (UTC)
+    dt = datetime.strptime(dt_str, "%Y-%m-%d %H:%M:%S")
+
+    # Convert to Myanmar time (+6:30)
+    dt += timedelta(hours=6, minutes=30)
+
+    now = datetime.utcnow() + timedelta(hours=6, minutes=30)
+
+    # Format based on year
+    if dt.year == now.year:
+        return dt.strftime("%d %b %H:%M")   # 14 Apr 15:17
+    else:
+        return dt.strftime("%d %b, %Y %H:%M")  # Apr 14 2025 08:47
+      
 # /in command
 async def handle_income(update, context):
     user_id = update.effective_user.id
@@ -88,24 +106,85 @@ async def handle_balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"💹 Your balance is: {balance}")
 
 # /history command
+async def send_history_page(message, user_id, page):
+    offset = page * PAGE_SIZE
+    history = db.get_history(user_id, PAGE_SIZE, offset)
+
+    if not history:
+        await message.reply_text("No more transactions.")
+        return
+
+    msg = f"<b>📄 Page {page + 1}</b>\n\n"
+    msg += "<b>ID | Type | Amount | Note | Date</b>\n\n"
+
+    for t in history:
+        t_id, t_type, amount, note, created_at = t
+        note = note or ""
+        icon = "💰" if t_type == "in" else "💸"
+
+        msg += f"{t_id} | {icon} | {format_amount_shorthand(amount)} | <b>{note}</b> | {format_mm_datetime(created_at)}\n"
+
+    # 🔘 Buttons
+    keyboard = []
+
+    if page > 0:
+        keyboard.append(InlineKeyboardButton("⬅️ Prev", callback_data=f"history_{page-1}"))
+
+    # Only show Next if current page is full
+    if len(history) == PAGE_SIZE:
+        keyboard.append(InlineKeyboardButton("➡️ Next", callback_data=f"history_{page+1}"))
+
+    reply_markup = InlineKeyboardMarkup([keyboard])
+
+    await message.reply_text(msg, parse_mode="HTML", reply_markup=reply_markup)
+
 async def handle_history(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     if user_id not in ALLOWED_USERS:
         return
 
-    history = db.get_history(user_id, HISTORY_LIMIT)
+    page = 0
+    await send_history_page(update.message, user_id, page)
+
+async def history_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    user_id = query.from_user.id
+
+    # extract page
+    page = int(query.data.split("_")[1])
+
+    offset = page * PAGE_SIZE
+    history = db.get_history(user_id, PAGE_SIZE, offset)
+
+    # ❌ If no data → don't change page
     if not history:
-        await update.message.reply_text("No transactions yet.")
+        await query.answer("🚫 No more pages", show_alert=True)
         return
 
-    msg = "<b>ID | Type | Amount | Note | Date</b>\n"
+    msg = f"<b>📄 Page {page + 1}</b>\n\n"
+    msg += "<b>ID | Type | Amount | Note | Date</b>\n\n"
+
     for t in history:
         t_id, t_type, amount, note, created_at = t
         note = note or ""
         icon = "💰" if t_type == "in" else "💸"
-        msg += f"{t_id} | {icon} | {format_amount_shorthand(amount)} | <b>{note}</b> | {created_at}\n"
 
-    await update.message.reply_text(msg, parse_mode="HTML")
+        msg += f"{t_id} | {icon} | {format_amount_shorthand(amount)} | <b>{note}</b> | {format_mm_datetime(created_at)}\n"
+
+    # 🔘 Buttons
+    keyboard = []
+
+    if page > 0:
+        keyboard.append(InlineKeyboardButton("⬅️ Prev", callback_data=f"history_{page-1}"))
+
+    if len(history) == PAGE_SIZE:
+        keyboard.append(InlineKeyboardButton("➡️ Next", callback_data=f"history_{page+1}"))
+
+    reply_markup = InlineKeyboardMarkup([keyboard])
+
+    await query.edit_message_text(msg, parse_mode="HTML", reply_markup=reply_markup)
 
 async def handle_delete(update, context):
     user_id = update.effective_user.id
@@ -137,7 +216,7 @@ async def handle_summary(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     args = context.args
-    now = datetime.datetime.now()
+    now = datetime.now()
 
     # 👉 If no args → show buttons
     if not args:
@@ -163,8 +242,8 @@ async def handle_summary(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if args[0].lower() == "year":
         if len(args) == 2:
             year = int(args[1])
-            start = datetime.datetime(year, 1, 1)
-            end = datetime.datetime(year, 12, 31)
+            start = datetime(year, 1, 1)
+            end = datetime(year, 12, 31)
             title = f"Year {year}"
 
             query += " AND created_at BETWEEN ? AND ?"
@@ -181,12 +260,12 @@ async def handle_summary(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 month = int(args[1])
                 year = int(args[2]) if len(args) == 3 else now.year
 
-                start = datetime.datetime(year, month, 1)
+                start = datetime(year, month, 1)
 
                 if month == 12:
-                    end = datetime.datetime(year + 1, 1, 1)
+                    end = datetime(year + 1, 1, 1)
                 else:
-                    end = datetime.datetime(year, month + 1, 1)
+                    end = datetime(year, month + 1, 1)
 
                 title = f"{start.strftime('%B %Y')}"
 
@@ -246,7 +325,7 @@ async def summary_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query_cb.answer()
 
     user_id = query_cb.from_user.id
-    now = datetime.datetime.now()
+    now = datetime.now()
 
     conn = db.get_connection()
     cursor = conn.cursor()
@@ -271,8 +350,8 @@ async def summary_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         params.extend([start, end])
 
     elif query_cb.data == "summary_year":
-        start = datetime.datetime(now.year, 1, 1)
-        end = datetime.datetime(now.year, 12, 31)
+        start = datetime(now.year, 1, 1)
+        end = datetime(now.year, 12, 31)
         title = f"Year {now.year}"
 
         base_query += " AND created_at BETWEEN ? AND ?"
@@ -336,7 +415,6 @@ async def handle_export(update: Update, context: ContextTypes.DEFAULT_TYPE):
         filename="transactions_backup.csv",
         caption="📦 Your backup file"
     )
-
 
 async def handle_import(update, context):
     user_id = update.effective_user.id
