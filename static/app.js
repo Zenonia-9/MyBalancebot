@@ -12,7 +12,7 @@ tg.onEvent("themeChanged", applyTheme);
 
 // ── User ───────────────────────────────────────────────
 const tgUser = tg.initDataUnsafe?.user;
-const USER_ID = tgUser?.id || 1; // fallback for local testing
+const USER_ID = tgUser?.id || 1;
 
 document.getElementById("username").textContent =
   tgUser ? `@${tgUser.username || tgUser.first_name}` : "Demo Mode";
@@ -24,6 +24,22 @@ const PAGE_SIZE = 20;
 let pendingDeleteId = null;
 let currentSummaryPeriod = "month";
 let userSettings = { currency: "MMK", timezone: "UTC" };
+
+// ── Cache & rate limit ─────────────────────────────────
+const CACHE_TTL_MS = 30_000;
+const TAB_COOLDOWN_MS = 1000;
+const cache = {};
+const isFetching = {};
+let lastTabSwitch = 0;
+let tabSpamCount = 0;
+let tabSpamTimer = null;
+
+function getCached(key) {
+  const c = cache[key];
+  return (c && Date.now() - c.ts < CACHE_TTL_MS) ? c.data : null;
+}
+function setCache(key, data) { cache[key] = { data, ts: Date.now() }; }
+function bustCache(...keys) { keys.forEach(k => delete cache[k]); }
 
 // ── Helpers ────────────────────────────────────────────
 function fmt(amount) {
@@ -59,9 +75,19 @@ function showToast(msg, duration = 2200) {
 
 // ── Tabs ───────────────────────────────────────────────
 function switchTab(name) {
+  const now = Date.now();
+  if (now - lastTabSwitch < TAB_COOLDOWN_MS) {
+    tabSpamCount++;
+    clearTimeout(tabSpamTimer);
+    tabSpamTimer = setTimeout(() => { tabSpamCount = 0; }, 2500);
+    if (tabSpamCount >= 3) showToast("⏳ Slow down!", 2000);
+    return;
+  }
+  tabSpamCount = 0;
+  lastTabSwitch = now;
+
   document.querySelectorAll(".tab").forEach((el, i) => {
-    const names = ["add", "history", "summary"];
-    el.classList.toggle("active", names[i] === name);
+    el.classList.toggle("active", ["add","history","summary"][i] === name);
   });
   document.querySelectorAll(".panel").forEach(el => el.classList.remove("active"));
   document.getElementById(`panel-${name}`).classList.add("active");
@@ -78,9 +104,23 @@ function setType(type) {
 }
 
 // ── Balance ────────────────────────────────────────────
-async function loadBalance() {
-  const res = await fetch(`/api/balance?user_id=${USER_ID}`);
-  const data = await res.json();
+async function loadBalance(force = false) {
+  const ckey = `bal_${USER_ID}`;
+  if (!force) {
+    const cached = getCached(ckey);
+    if (cached) { renderBalance(cached); return; }
+  }
+  if (isFetching[ckey]) return;
+  isFetching[ckey] = true;
+  try {
+    const res = await fetch(`/api/balance?user_id=${USER_ID}`);
+    const data = await res.json();
+    setCache(ckey, data);
+    renderBalance(data);
+  } finally { isFetching[ckey] = false; }
+}
+
+function renderBalance(data) {
   document.getElementById("balance-display").textContent = fmtFull(data.balance) + " " + cur();
   document.getElementById("total-in-display").textContent = fmt(data.total_in) + " " + cur();
   document.getElementById("total-out-display").textContent = fmt(data.total_out) + " " + cur();
@@ -90,7 +130,6 @@ async function loadBalance() {
 async function submitTransaction() {
   const rawAmount = document.getElementById("amount-input").value.trim();
   const note = document.getElementById("note-input").value.trim();
-
   if (!rawAmount) { showToast("⚠️ Enter an amount"); return; }
 
   const btn = document.querySelector(".btn-submit");
@@ -108,7 +147,8 @@ async function submitTransaction() {
       document.getElementById("amount-input").value = "";
       document.getElementById("note-input").value = "";
       showToast(txType === "in" ? "✅ Income added!" : "✅ Expense added!");
-      loadBalance();
+      bustCache(`bal_${USER_ID}`, `hist_${USER_ID}_0`);
+      loadBalance(true);
     } else {
       showToast("❌ " + (data.error || "Failed"));
     }
@@ -124,23 +164,34 @@ async function submitTransaction() {
 async function loadHistory(append = false) {
   if (!append) {
     historyOffset = 0;
-    document.getElementById("tx-list").innerHTML = '<div class="empty-state"><div class="spinner"></div></div>';
+    const cached = getCached(`hist_${USER_ID}_0`);
+    if (cached) { renderHistory(cached, false); return; }
+    document.getElementById("tx-list").innerHTML = '<div class="empty-state"><span class="spinner"></span></div>';
   }
 
-  const res = await fetch(`/api/history?user_id=${USER_ID}&limit=${PAGE_SIZE}&offset=${historyOffset}`);
-  const data = await res.json();
-  const list = document.getElementById("tx-list");
+  const ckey = `hist_${USER_ID}_${historyOffset}`;
+  if (isFetching[ckey]) return;
+  isFetching[ckey] = true;
 
+  try {
+    const res = await fetch(`/api/history?user_id=${USER_ID}&limit=${PAGE_SIZE}&offset=${historyOffset}`);
+    const data = await res.json();
+    if (!append) setCache(`hist_${USER_ID}_0`, data);
+    renderHistory(data, append);
+  } finally { isFetching[ckey] = false; }
+}
+
+function renderHistory(data, append) {
+  const list = document.getElementById("tx-list");
   if (!append) list.innerHTML = "";
 
-  if (data.transactions.length === 0 && !append) {
+  if (!data.transactions.length && !append) {
     list.innerHTML = '<div class="empty-state"><div class="icon">📭</div><p>No transactions yet</p></div>';
     document.getElementById("load-more-btn").style.display = "none";
     return;
   }
 
   data.transactions.forEach(tx => list.appendChild(buildTxItem(tx)));
-
   historyOffset += data.transactions.length;
   document.getElementById("load-more-btn").style.display =
     data.transactions.length === PAGE_SIZE ? "block" : "none";
@@ -189,7 +240,8 @@ async function confirmDelete() {
   closeDeleteModal();
   if (data.status === "ok") {
     showToast("🗑 Deleted");
-    loadBalance();
+    bustCache(`bal_${USER_ID}`, `hist_${USER_ID}_0`);
+    loadBalance(true);
     historyOffset = 0;
     loadHistory();
   } else {
@@ -213,32 +265,57 @@ function setSummaryPeriod(period) {
 }
 
 async function loadSummary() {
+  const ckey = `sum_${USER_ID}_${currentSummaryPeriod}${currentSummaryPeriod === "year" ? "_" + currentYear : ""}`;
+  const cached = getCached(ckey);
+
   if (currentSummaryPeriod === "month") {
+    if (cached) { renderMonthSummary(cached); return; }
+    if (isFetching[ckey]) return;
+    isFetching[ckey] = true;
     ["sum-in","sum-out","sum-net"].forEach(id => {
       document.getElementById(id).innerHTML = '<span class="spinner"></span>';
     });
-    const res = await fetch(`/api/summary?user_id=${USER_ID}&period=month`);
-    const data = await res.json();
-    document.getElementById("sum-in").textContent  = fmtFull(data.total_in)  + " " + cur();
-    document.getElementById("sum-out").textContent = fmtFull(data.total_out) + " " + cur();
-    const net = data.total_in - data.total_out;
-    const netEl = document.getElementById("sum-net");
-    netEl.textContent = (net >= 0 ? "+" : "") + fmtFull(net) + " " + cur();
-    netEl.className = "net-value " + (net >= 0 ? "positive" : "negative");
+    try {
+      const res = await fetch(`/api/summary?user_id=${USER_ID}&period=month`);
+      const data = await res.json();
+      setCache(ckey, data);
+      renderMonthSummary(data);
+    } finally { isFetching[ckey] = false; }
 
   } else if (currentSummaryPeriod === "year") {
     document.getElementById("year-nav-label").textContent = currentYear;
+    if (cached) { renderBreakdown("monthly-list", cached.rows, r => MONTHS[r.month - 1]); return; }
+    if (isFetching[ckey]) return;
+    isFetching[ckey] = true;
     document.getElementById("monthly-list").innerHTML = '<div class="empty-state"><span class="spinner"></span></div>';
-    const res = await fetch(`/api/summary/monthly?user_id=${USER_ID}&year=${currentYear}`);
-    const data = await res.json();
-    renderBreakdown("monthly-list", data.rows, r => MONTHS[r.month - 1]);
+    try {
+      const res = await fetch(`/api/summary/monthly?user_id=${USER_ID}&year=${currentYear}`);
+      const data = await res.json();
+      setCache(ckey, data);
+      renderBreakdown("monthly-list", data.rows, r => MONTHS[r.month - 1]);
+    } finally { isFetching[ckey] = false; }
 
   } else {
+    if (cached) { renderBreakdown("yearly-list", cached.rows, r => String(r.year)); return; }
+    if (isFetching[ckey]) return;
+    isFetching[ckey] = true;
     document.getElementById("yearly-list").innerHTML = '<div class="empty-state"><span class="spinner"></span></div>';
-    const res = await fetch(`/api/summary/yearly?user_id=${USER_ID}`);
-    const data = await res.json();
-    renderBreakdown("yearly-list", data.rows, r => String(r.year));
+    try {
+      const res = await fetch(`/api/summary/yearly?user_id=${USER_ID}`);
+      const data = await res.json();
+      setCache(ckey, data);
+      renderBreakdown("yearly-list", data.rows, r => String(r.year));
+    } finally { isFetching[ckey] = false; }
   }
+}
+
+function renderMonthSummary(data) {
+  document.getElementById("sum-in").textContent  = fmtFull(data.total_in)  + " " + cur();
+  document.getElementById("sum-out").textContent = fmtFull(data.total_out) + " " + cur();
+  const net = data.total_in - data.total_out;
+  const netEl = document.getElementById("sum-net");
+  netEl.textContent = (net >= 0 ? "+" : "") + fmtFull(net) + " " + cur();
+  netEl.className = "net-value " + (net >= 0 ? "positive" : "negative");
 }
 
 function renderBreakdown(containerId, rows, labelFn) {
@@ -298,8 +375,6 @@ async function saveSettings() {
   const timezone = document.getElementById("settings-timezone").value.trim();
   if (!currency) { showToast("⚠️ Enter a currency"); return; }
   if (!timezone)  { showToast("⚠️ Enter a timezone");  return; }
-
-  // validate timezone
   try { Intl.DateTimeFormat(undefined, { timeZone: timezone }); }
   catch { showToast("❌ Invalid timezone"); return; }
 
@@ -311,10 +386,11 @@ async function saveSettings() {
   const data = await res.json();
   if (data.status === "ok") {
     userSettings = { currency, timezone };
+    // bust all caches so re-renders use new currency label
+    Object.keys(cache).forEach(k => delete cache[k]);
     closeSettings();
     showToast("✅ Settings saved");
-    loadBalance();
-    // refresh visible panel
+    loadBalance(true);
     const activePanel = document.querySelector(".panel.active")?.id;
     if (activePanel === "panel-history") { historyOffset = 0; loadHistory(); }
     if (activePanel === "panel-summary") loadSummary();
@@ -333,10 +409,8 @@ document.getElementById("amount-input").addEventListener("keydown", e => {
 
 // ── Init ───────────────────────────────────────────────
 async function init() {
-  // auto-detect timezone on first visit
   const detectedTz = Intl.DateTimeFormat().resolvedOptions().timeZone;
   await loadSettings();
-  // if still default UTC and we detected something, save it silently
   if (userSettings.timezone === "UTC" && detectedTz && detectedTz !== "UTC") {
     await fetch("/api/settings", {
       method: "POST",

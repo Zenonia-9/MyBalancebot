@@ -70,7 +70,9 @@ async def telegram_webhook():
 def api_balance():
     user_id = request.args.get("user_id", type=int)
     balance, total_in, total_out = db.get_balance_full(user_id)
-    return jsonify({"balance": balance, "total_in": total_in, "total_out": total_out})
+    resp = jsonify({"balance": balance, "total_in": total_in, "total_out": total_out})
+    resp.headers["Cache-Control"] = "no-store"
+    return resp
 
 @flask_app.route("/api/add", methods=["POST"])
 def api_add():
@@ -96,7 +98,7 @@ def api_add():
 @flask_app.route("/api/history")
 def api_history():
     user_id = request.args.get("user_id", type=int)
-    limit = request.args.get("limit", 20, type=int)
+    limit = min(request.args.get("limit", 20, type=int), 50)  # cap at 50
     offset = request.args.get("offset", 0, type=int)
     rows = db.get_history(user_id, limit, offset)
     transactions = [
