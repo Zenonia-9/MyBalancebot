@@ -8,7 +8,6 @@ class FinanceDB:
         self.is_postgres = self.db_url.startswith("postgres://")
 
         if not self.is_postgres:
-            # Create SQLite table if not exists
             conn = sqlite3.connect(self.db_url)
             cursor = conn.cursor()
             cursor.execute("""
@@ -21,10 +20,16 @@ class FinanceDB:
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             """)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS user_settings(
+                    user_id INTEGER PRIMARY KEY,
+                    currency TEXT DEFAULT 'MMK',
+                    timezone TEXT DEFAULT 'UTC'
+                )
+            """)
             conn.commit()
             conn.close()
         else:
-            # Create PostgreSQL table if not exists
             conn = self.get_connection()
             cursor = conn.cursor()
             cursor.execute("""
@@ -35,6 +40,13 @@ class FinanceDB:
                     amount DOUBLE PRECISION,
                     note TEXT,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS user_settings(
+                    user_id BIGINT PRIMARY KEY,
+                    currency TEXT DEFAULT 'MMK',
+                    timezone TEXT DEFAULT 'UTC'
                 )
             """)
             conn.commit()
@@ -139,6 +151,35 @@ class FinanceDB:
         rows = cursor.fetchall()
         conn.close()
         return rows
+
+    def get_settings(self, user_id: int) -> dict:
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        ph = "%s" if self.is_postgres else "?"
+        cursor.execute(f"SELECT currency, timezone FROM user_settings WHERE user_id={ph}", (user_id,))
+        row = cursor.fetchone()
+        conn.close()
+        if row:
+            return {"currency": row[0], "timezone": row[1]}
+        return {"currency": "MMK", "timezone": "UTC"}
+
+    def save_settings(self, user_id: int, currency: str, timezone: str):
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        if self.is_postgres:
+            cursor.execute("""
+                INSERT INTO user_settings (user_id, currency, timezone)
+                VALUES (%s, %s, %s)
+                ON CONFLICT (user_id) DO UPDATE SET currency=EXCLUDED.currency, timezone=EXCLUDED.timezone
+            """, (user_id, currency, timezone))
+        else:
+            cursor.execute("""
+                INSERT INTO user_settings (user_id, currency, timezone)
+                VALUES (?, ?, ?)
+                ON CONFLICT (user_id) DO UPDATE SET currency=excluded.currency, timezone=excluded.timezone
+            """, (user_id, currency, timezone))
+        conn.commit()
+        conn.close()
 
     def get_history(self, user_id: int, limit: int = 20, offset: int = 0):
         conn = self.get_connection()

@@ -23,6 +23,7 @@ let historyOffset = 0;
 const PAGE_SIZE = 20;
 let pendingDeleteId = null;
 let currentSummaryPeriod = "month";
+let userSettings = { currency: "MMK", timezone: "UTC" };
 
 // ── Helpers ────────────────────────────────────────────
 function fmt(amount) {
@@ -33,6 +34,20 @@ function fmt(amount) {
 
 function fmtFull(amount) {
   return amount.toLocaleString("en-US", { minimumFractionDigits: 0, maximumFractionDigits: 2 });
+}
+
+function cur() { return userSettings.currency || "MMK"; }
+
+function fmtDate(utcStr) {
+  try {
+    const tz = userSettings.timezone || "UTC";
+    const dt = new Date(utcStr.replace(" ", "T") + "Z");
+    const dtYear = new Intl.DateTimeFormat("en", { timeZone: tz, year: "numeric" }).format(dt);
+    const nowYear = new Intl.DateTimeFormat("en", { timeZone: tz, year: "numeric" }).format(new Date());
+    const opts = { timeZone: tz, day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit", hour12: false };
+    if (dtYear !== nowYear) opts.year = "numeric";
+    return new Intl.DateTimeFormat("en-GB", opts).format(dt).replace(",", "");
+  } catch { return utcStr; }
 }
 
 function showToast(msg, duration = 2200) {
@@ -66,9 +81,9 @@ function setType(type) {
 async function loadBalance() {
   const res = await fetch(`/api/balance?user_id=${USER_ID}`);
   const data = await res.json();
-  document.getElementById("balance-display").textContent = fmtFull(data.balance) + " MMK";
-  document.getElementById("total-in-display").textContent = fmt(data.total_in) + " MMK";
-  document.getElementById("total-out-display").textContent = fmt(data.total_out) + " MMK";
+  document.getElementById("balance-display").textContent = fmtFull(data.balance) + " " + cur();
+  document.getElementById("total-in-display").textContent = fmt(data.total_in) + " " + cur();
+  document.getElementById("total-out-display").textContent = fmt(data.total_out) + " " + cur();
 }
 
 // ── Add Transaction ────────────────────────────────────
@@ -139,7 +154,7 @@ function buildTxItem(tx) {
     <div class="tx-icon ${isIn ? "income" : "expense"}">${isIn ? "💰" : "💸"}</div>
     <div class="tx-info">
       <div class="tx-note">${tx.note || (isIn ? "Income" : "Expense")}</div>
-      <div class="tx-date">#${tx.id} · ${tx.created_at}</div>
+      <div class="tx-date">#${tx.id} · ${fmtDate(tx.created_at)}</div>
     </div>
     <div class="tx-amount ${isIn ? "income" : "expense"}">${isIn ? "+" : "-"}${fmt(tx.amount)}</div>
     <button class="tx-delete" onclick="openDeleteModal(${tx.id}, '${(tx.note || "").replace(/'/g, "\\'")}', ${tx.amount}, '${tx.type}')">🗑</button>
@@ -154,7 +169,7 @@ function openDeleteModal(id, note, amount, type) {
   pendingDeleteId = id;
   const icon = type === "in" ? "💰" : "💸";
   document.getElementById("delete-modal-body").innerHTML =
-    `${icon} <b>${fmtFull(amount)} MMK</b>${note ? ` — ${note}` : ""}<br><small style="color:var(--text-muted)">Transaction #${id}</small>`;
+    `${icon} <b>${fmtFull(amount)} ${cur()}</b>${note ? ` — ${note}` : ""}<br><small style="color:var(--text-muted)">Transaction #${id}</small>`;
   document.getElementById("delete-modal").classList.add("show");
 }
 
@@ -204,11 +219,11 @@ async function loadSummary() {
     });
     const res = await fetch(`/api/summary?user_id=${USER_ID}&period=month`);
     const data = await res.json();
-    document.getElementById("sum-in").textContent  = fmtFull(data.total_in)  + " MMK";
-    document.getElementById("sum-out").textContent = fmtFull(data.total_out) + " MMK";
+    document.getElementById("sum-in").textContent  = fmtFull(data.total_in)  + " " + cur();
+    document.getElementById("sum-out").textContent = fmtFull(data.total_out) + " " + cur();
     const net = data.total_in - data.total_out;
     const netEl = document.getElementById("sum-net");
-    netEl.textContent = (net >= 0 ? "+" : "") + fmtFull(net) + " MMK";
+    netEl.textContent = (net >= 0 ? "+" : "") + fmtFull(net) + " " + cur();
     netEl.className = "net-value " + (net >= 0 ? "positive" : "negative");
 
   } else if (currentSummaryPeriod === "year") {
@@ -259,6 +274,55 @@ function shiftYear(delta) {
   loadSummary();
 }
 
+// ── Settings ───────────────────────────────────────────
+async function loadSettings() {
+  const res = await fetch(`/api/settings?user_id=${USER_ID}`);
+  userSettings = await res.json();
+}
+
+function openSettings() {
+  const detectedTz = Intl.DateTimeFormat().resolvedOptions().timeZone;
+  document.getElementById("settings-currency").value = userSettings.currency || "MMK";
+  document.getElementById("settings-timezone").value = userSettings.timezone || detectedTz;
+  document.getElementById("tz-detected").textContent =
+    detectedTz ? `🌐 Browser detected: ${detectedTz}` : "";
+  document.getElementById("settings-modal").classList.add("show");
+}
+
+function closeSettings() {
+  document.getElementById("settings-modal").classList.remove("show");
+}
+
+async function saveSettings() {
+  const currency = document.getElementById("settings-currency").value.trim().toUpperCase();
+  const timezone = document.getElementById("settings-timezone").value.trim();
+  if (!currency) { showToast("⚠️ Enter a currency"); return; }
+  if (!timezone)  { showToast("⚠️ Enter a timezone");  return; }
+
+  // validate timezone
+  try { Intl.DateTimeFormat(undefined, { timeZone: timezone }); }
+  catch { showToast("❌ Invalid timezone"); return; }
+
+  const res = await fetch("/api/settings", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ user_id: USER_ID, currency, timezone })
+  });
+  const data = await res.json();
+  if (data.status === "ok") {
+    userSettings = { currency, timezone };
+    closeSettings();
+    showToast("✅ Settings saved");
+    loadBalance();
+    // refresh visible panel
+    const activePanel = document.querySelector(".panel.active")?.id;
+    if (activePanel === "panel-history") { historyOffset = 0; loadHistory(); }
+    if (activePanel === "panel-summary") loadSummary();
+  } else {
+    showToast("❌ Failed to save");
+  }
+}
+
 // ── Enter key support ──────────────────────────────────
 document.getElementById("note-input").addEventListener("keydown", e => {
   if (e.key === "Enter") submitTransaction();
@@ -268,4 +332,19 @@ document.getElementById("amount-input").addEventListener("keydown", e => {
 });
 
 // ── Init ───────────────────────────────────────────────
-loadBalance();
+async function init() {
+  // auto-detect timezone on first visit
+  const detectedTz = Intl.DateTimeFormat().resolvedOptions().timeZone;
+  await loadSettings();
+  // if still default UTC and we detected something, save it silently
+  if (userSettings.timezone === "UTC" && detectedTz && detectedTz !== "UTC") {
+    await fetch("/api/settings", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ user_id: USER_ID, currency: userSettings.currency, timezone: detectedTz })
+    });
+    userSettings.timezone = detectedTz;
+  }
+  loadBalance();
+}
+init();

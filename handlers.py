@@ -1,5 +1,5 @@
-from datetime import datetime, timedelta
-
+from datetime import datetime, timedelta, timezone
+import zoneinfo
 import csv
 import io
 
@@ -40,20 +40,25 @@ def format_amount_shorthand(amount: float) -> str:
     else:
         return f"{int(amount)}"
 
-def format_mm_datetime(dt_str):
-    # Parse DB timestamp (UTC)
-    dt = datetime.strptime(dt_str, "%Y-%m-%d %H:%M:%S")
-
-    # Convert to Myanmar time (+6:30)
-    dt += timedelta(hours=6, minutes=30)
-
-    now = datetime.utcnow() + timedelta(hours=6, minutes=30)
-
-    # Format based on year
+def format_datetime(dt_str, tz_name="UTC"):
+    dt = datetime.strptime(dt_str, "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
+    try:
+        tz = zoneinfo.ZoneInfo(tz_name)
+    except Exception:
+        tz = timezone.utc
+    dt = dt.astimezone(tz)
+    now = datetime.now(tz)
     if dt.year == now.year:
-        return dt.strftime("%d %b %H:%M")   # 14 Apr 15:17
-    else:
-        return dt.strftime("%d %b, %Y %H:%M")  # Apr 14 2025 08:47
+        return dt.strftime("%d %b %H:%M")
+    return dt.strftime("%d %b, %Y %H:%M")
+
+# keep old name as alias for bot commands (uses UTC+6:30 default for Myanmar)
+def format_mm_datetime(dt_str, user_id=None):
+    tz = "Asia/Rangoon"
+    if user_id:
+        s = db.get_settings(user_id)
+        tz = s.get("timezone", "Asia/Rangoon")
+    return format_datetime(dt_str, tz)
 
 # /start handler
 async def start(update, context):
@@ -105,7 +110,8 @@ async def handle_income(update, context):
         note = " ".join(context.args[1:]) if len(context.args) > 1 else None
 
         db.add_transaction(user_id, "in", amount, note)
-        await update.message.reply_text(f"✅ Added income: {int(amount)} {note or ''}")
+        s = db.get_settings(user_id)
+        await update.message.reply_text(f"✅ Added income: {int(amount)} {s['currency']} {note or ''}")
 
     except ValueError:
         await update.message.reply_text("Invalid amount. Example: /in 10k Pocket Money")
@@ -125,7 +131,8 @@ async def handle_expense(update: Update, context: ContextTypes.DEFAULT_TYPE):
         amount = parse_amount(raw_amount)
         note = " ".join(context.args[1:]) if len(context.args) > 1 else None
         db.add_transaction(user_id, "out", amount, note)
-        await update.message.reply_text(f"✅ Added expense: {amount} {note or ''}")
+        s = db.get_settings(user_id)
+        await update.message.reply_text(f"✅ Added expense: {int(amount)} {s['currency']} {note or ''}")
     except ValueError:
         await update.message.reply_text("Invalid amount. Example: /out 10k Coffee")
 
@@ -135,7 +142,8 @@ async def handle_balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_allowed(user_id):
         return
     balance = db.get_balance(user_id)
-    await update.message.reply_text(f"💹 Your balance is: {balance:,.2f}")
+    s = db.get_settings(user_id)
+    await update.message.reply_text(f"💹 Your balance is: {balance:,.2f} {s['currency']}")
 
 # /history command
 async def send_history_page(message, user_id, page):
@@ -154,27 +162,22 @@ async def send_history_page(message, user_id, page):
         note = note or ""
         icon = "💰" if t_type == "in" else "💸"
 
-        msg += f"{t_id} | {icon} | {format_amount_shorthand(amount)} | <b>{note}</b> | {format_mm_datetime(created_at)}\n"
+        s = db.get_settings(user_id)
+        msg += f"{t_id} | {icon} | {format_amount_shorthand(amount)} | <b>{note}</b> | {format_mm_datetime(created_at, user_id)}\n"
 
-    # 🔘 Buttons
     keyboard = []
-
     if page > 0:
         keyboard.append(InlineKeyboardButton("⬅️ Prev", callback_data=f"history_{page-1}"))
-
-    # Only show Next if current page is full
     if len(history) == PAGE_SIZE:
         keyboard.append(InlineKeyboardButton("➡️ Next", callback_data=f"history_{page+1}"))
 
     reply_markup = InlineKeyboardMarkup([keyboard])
-
     await message.reply_text(msg, parse_mode="HTML", reply_markup=reply_markup)
 
 async def handle_history(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     if user_id not in ALLOWED_USERS:
         return
-
     page = 0
     await send_history_page(update.message, user_id, page)
 
@@ -203,19 +206,15 @@ async def history_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         note = note or ""
         icon = "💰" if t_type == "in" else "💸"
 
-        msg += f"{t_id} | {icon} | {format_amount_shorthand(amount)} | <b>{note}</b> | {format_mm_datetime(created_at)}\n"
+        msg += f"{t_id} | {icon} | {format_amount_shorthand(amount)} | <b>{note}</b> | {format_mm_datetime(created_at, user_id)}\n"
 
-    # 🔘 Buttons
     keyboard = []
-
     if page > 0:
         keyboard.append(InlineKeyboardButton("⬅️ Prev", callback_data=f"history_{page-1}"))
-
     if len(history) == PAGE_SIZE:
         keyboard.append(InlineKeyboardButton("➡️ Next", callback_data=f"history_{page+1}"))
 
     reply_markup = InlineKeyboardMarkup([keyboard])
-
     await query.edit_message_text(msg, parse_mode="HTML", reply_markup=reply_markup)
 
 async def send_delete_page(message, user_id, page, selected_id=None):
@@ -237,7 +236,7 @@ async def send_delete_page(message, user_id, page, selected_id=None):
         note = note or "-"
         short_note = note[:10] + "..." if len(note) > 10 else ""
 
-        text = f"{icon} {format_amount_shorthand(amount)} {short_note} {format_mm_datetime(created_at)}"
+        text = f"{icon} {format_amount_shorthand(amount)} {short_note} {format_mm_datetime(created_at, user_id)}"
 
         # 🌟 highlight selected
         if selected_id == t_id:
@@ -285,11 +284,12 @@ async def handle_delete(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
             icon = "💰" if t_type == "in" else "💸"
 
+            s = db.get_settings(user_id)
             msg = (
                 f"⚠️ <b>Confirm Delete</b>\n\n"
-                f"{icon} {int(amount)} MMK\n"
+                f"{icon} {int(amount)} {s['currency']}\n"
                 f"{note or '-'}\n"
-                f"{format_mm_datetime(created_at)}"
+                f"{format_mm_datetime(created_at, user_id)}"
             )
 
             keyboard = [
@@ -342,11 +342,12 @@ async def delete_ui_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
         icon = "💰" if t_type == "in" else "💸"
 
+        s = db.get_settings(user_id)
         msg = (
             f"⚠️ <b>Confirm Delete</b>\n\n"
-            f"{icon} {int(amount)} MMK\n"
+            f"{icon} {int(amount)} {s['currency']}\n"
             f"{note or '-'}\n"
-            f"{format_mm_datetime(created_at)}"
+            f"{format_mm_datetime(created_at, user_id)}"
         )
 
         keyboard = [
@@ -473,11 +474,13 @@ async def handle_summary(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     balance = total_in - total_out
 
+    s = db.get_settings(user_id)
+    cur = s['currency']
     msg = (
         f"📊 {title} Summary\n"
-        f"💰 Income: {f"{total_in:,.2f}"}\n"
-        f"💸 Expenses: {f"{total_out:,.2f}"}\n"
-        f"💹 Net: {f"{balance:,.2f}"}"
+        f"💰 Income: {total_in:,.2f} {cur}\n"
+        f"💸 Expenses: {total_out:,.2f} {cur}\n"
+        f"💹 Net: {balance:,.2f} {cur}"
     )
 
     await update.message.reply_text(msg)
@@ -546,11 +549,13 @@ async def summary_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     balance = total_in - total_out
 
+    s = db.get_settings(user_id)
+    cur = s['currency']
     msg = (
         f"📊 {title} Summary\n"
-        f"💰 Income: {f"{total_in:,.2f}"}\n"
-        f"💸 Expenses: {f"{total_out:,.2f}"}\n"
-        f"💹 Net: {f"{balance:,.2f}"}"
+        f"💰 Income: {total_in:,.2f} {cur}\n"
+        f"💸 Expenses: {total_out:,.2f} {cur}\n"
+        f"💹 Net: {balance:,.2f} {cur}"
     )
 
     await query_cb.edit_message_text(msg)

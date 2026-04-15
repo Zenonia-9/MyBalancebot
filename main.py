@@ -152,6 +152,20 @@ def api_summary():
     conn.close()
     return jsonify({"total_in": total_in, "total_out": total_out})
 
+@flask_app.route("/api/settings")
+def api_get_settings():
+    user_id = request.args.get("user_id", type=int)
+    return jsonify(db.get_settings(user_id))
+
+@flask_app.route("/api/settings", methods=["POST"])
+def api_save_settings():
+    data = request.json
+    user_id = data["user_id"]
+    currency = data.get("currency", "MMK").strip().upper()
+    timezone = data.get("timezone", "UTC").strip()
+    db.save_settings(user_id, currency, timezone)
+    return jsonify({"status": "ok"})
+
 @flask_app.route("/api/summary/monthly")
 def api_summary_monthly():
     from datetime import datetime
