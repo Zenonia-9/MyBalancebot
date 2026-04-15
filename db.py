@@ -56,18 +56,21 @@ class FinanceDB:
         conn.close()
 
     def get_balance(self, user_id: int) -> float:
+        return self.get_balance_full(user_id)[0]
+
+    def get_balance_full(self, user_id: int):
         conn = self.get_connection()
         cursor = conn.cursor()
         cursor.execute("""
-            SELECT 
-                COALESCE(SUM(CASE WHEN type='in' THEN amount ELSE 0 END),0) -
+            SELECT
+                COALESCE(SUM(CASE WHEN type='in' THEN amount ELSE 0 END),0),
                 COALESCE(SUM(CASE WHEN type='out' THEN amount ELSE 0 END),0)
             FROM transactions
             WHERE user_id=?
         """, (user_id,))
-        balance = cursor.fetchone()[0]
+        total_in, total_out = cursor.fetchone()
         conn.close()
-        return balance
+        return total_in - total_out, total_in, total_out
 
     def get_transaction(self, user_id: int, t_id: int):
         conn = self.get_connection()
@@ -83,6 +86,60 @@ class FinanceDB:
         conn.close()
         return row
     
+    def get_monthly_breakdown(self, user_id: int, year: int):
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        if self.is_postgres:
+            cursor.execute("""
+                SELECT
+                    EXTRACT(MONTH FROM created_at)::int AS month,
+                    COALESCE(SUM(CASE WHEN type='in' THEN amount ELSE 0 END),0),
+                    COALESCE(SUM(CASE WHEN type='out' THEN amount ELSE 0 END),0)
+                FROM transactions
+                WHERE user_id=%s AND EXTRACT(YEAR FROM created_at)=%s
+                GROUP BY month ORDER BY month
+            """, (user_id, year))
+        else:
+            cursor.execute("""
+                SELECT
+                    CAST(strftime('%m', created_at) AS INTEGER) AS month,
+                    COALESCE(SUM(CASE WHEN type='in' THEN amount ELSE 0 END),0),
+                    COALESCE(SUM(CASE WHEN type='out' THEN amount ELSE 0 END),0)
+                FROM transactions
+                WHERE user_id=? AND strftime('%Y', created_at)=?
+                GROUP BY month ORDER BY month
+            """, (user_id, str(year)))
+        rows = cursor.fetchall()
+        conn.close()
+        return rows
+
+    def get_yearly_breakdown(self, user_id: int):
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        if self.is_postgres:
+            cursor.execute("""
+                SELECT
+                    EXTRACT(YEAR FROM created_at)::int AS year,
+                    COALESCE(SUM(CASE WHEN type='in' THEN amount ELSE 0 END),0),
+                    COALESCE(SUM(CASE WHEN type='out' THEN amount ELSE 0 END),0)
+                FROM transactions
+                WHERE user_id=%s
+                GROUP BY year ORDER BY year
+            """, (user_id,))
+        else:
+            cursor.execute("""
+                SELECT
+                    CAST(strftime('%Y', created_at) AS INTEGER) AS year,
+                    COALESCE(SUM(CASE WHEN type='in' THEN amount ELSE 0 END),0),
+                    COALESCE(SUM(CASE WHEN type='out' THEN amount ELSE 0 END),0)
+                FROM transactions
+                WHERE user_id=?
+                GROUP BY year ORDER BY year
+            """, (user_id,))
+        rows = cursor.fetchall()
+        conn.close()
+        return rows
+
     def get_history(self, user_id: int, limit: int = 20, offset: int = 0):
         conn = self.get_connection()
         cursor = conn.cursor()
