@@ -3,10 +3,10 @@ from datetime import datetime, timedelta
 import csv
 import io
 
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, WebAppInfo
 from telegram.ext import ContextTypes
 from db import FinanceDB
-from config import ALLOWED_USERS
+from config import ALLOWED_USERS, WEBHOOK_URL
 
 db = FinanceDB()
 # Max history entries to show
@@ -54,7 +54,38 @@ def format_mm_datetime(dt_str):
         return dt.strftime("%d %b %H:%M")   # 14 Apr 15:17
     else:
         return dt.strftime("%d %b, %Y %H:%M")  # Apr 14 2025 08:47
-      
+
+# /start handler
+async def start(update, context):
+    user_id = update.effective_user.id
+    if user_id not in ALLOWED_USERS:
+        return
+    
+    keyboard = [
+        [InlineKeyboardButton(
+            "📱 Open App",
+            web_app=WebAppInfo(url=WEBHOOK_URL)
+        )]
+    ]
+
+    reply_markup = InlineKeyboardMarkup(keyboard)
+
+    await update.message.reply_text("""👋 Welcome!  
+I’m here to help you effortlessly track your finances. Use the following commands to get started:
+
+- /in – Log an income  
+- /out – Record an expense  
+- /balance – Check your current balance  
+- /history – View your transaction history  
+- /delete – Remove a transaction  
+- /summary – Get a summary of your finances  
+- /export – Export your data  
+- /import – Import your data  
+
+Let’s take control of your money—one step at a time. 💼✨""",
+        reply_markup=reply_markup
+    )
+
 # /in command
 async def handle_income(update, context):
     user_id = update.effective_user.id

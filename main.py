@@ -1,56 +1,92 @@
-import os
+import nest_asyncio
+from flask import Flask, render_template, request, jsonify
+from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandler, MessageHandler, filters
-from config import ALLOWED_USERS, BOT_TOKEN, WEBHOOK_URL, PORT
-from handlers import handle_income, handle_expense, handle_balance, handle_history, handle_delete, handle_summary, summary_callback, handle_export, handle_import, history_callback, delete_ui_callback
 
-# Create bot application
-app = ApplicationBuilder().token(BOT_TOKEN).build()
+# Import your own modules
+from config import BOT_TOKEN, PORT, WEBHOOK_URL
+from handlers import *
+from db import FinanceDB
 
-# Register handlers
-app.add_handler(CommandHandler("in", handle_income))
-app.add_handler(CommandHandler("out", handle_expense))
-app.add_handler(CommandHandler("balance", handle_balance))
-app.add_handler(CommandHandler("history", handle_history))
-app.add_handler(CallbackQueryHandler(history_callback, pattern="^history_"))
-app.add_handler(CommandHandler("delete", handle_delete))
-app.add_handler(CallbackQueryHandler(delete_ui_callback, pattern="^del"))
-app.add_handler(CommandHandler("summary", handle_summary))
-app.add_handler(CallbackQueryHandler(summary_callback, pattern="^summary_"))
-app.add_handler(CommandHandler("export", handle_export))
-app.add_handler(CommandHandler("import", handle_import))
-app.add_handler(MessageHandler(filters.Document.ALL, handle_import))
 
-# Optional: /start handler
-async def start(update, context):
-    user_id = update.effective_user.id
-    if user_id not in ALLOWED_USERS:
-        return
-    await update.message.reply_text(
-        """👋 Welcome!  
-I’m here to help you effortlessly track your finances. Use the following commands to get started:
+# This is the magic line that prevents "Event loop is closed"
+nest_asyncio.apply()
+# ================= BOT SETUP =================
+# We initialize the application but we DO NOT call .run_polling()
+tg_app = ApplicationBuilder().token(BOT_TOKEN).build()
 
-- /in – Log an income  
-- /out – Record an expense  
-- /balance – Check your current balance  
-- /history – View your transaction history  
-- /delete – Remove a transaction  
-- /summary – Get a summary of your finances  
-- /export – Export your data  
-- /import – Import your data  
+# Add handlers (keeping your existing logic)
+tg_app.add_handler(CommandHandler("start", start))
+tg_app.add_handler(CommandHandler("in", handle_income))
+tg_app.add_handler(CommandHandler("out", handle_expense))
+tg_app.add_handler(CommandHandler("balance", handle_balance))
+tg_app.add_handler(CommandHandler("history", handle_history))
+tg_app.add_handler(CallbackQueryHandler(history_callback, pattern="^history_"))
+tg_app.add_handler(CommandHandler("delete", handle_delete))
+tg_app.add_handler(CallbackQueryHandler(delete_ui_callback, pattern="^del"))
+tg_app.add_handler(CommandHandler("summary", handle_summary))
+tg_app.add_handler(CallbackQueryHandler(summary_callback, pattern="^summary_"))
+tg_app.add_handler(CommandHandler("export", handle_export))
+tg_app.add_handler(CommandHandler("import", handle_import))
+tg_app.add_handler(MessageHandler(filters.Document.ALL, handle_import))
 
-Let’s take control of your money—one step at a time. 💼✨"""
-    )
-app.add_handler(CommandHandler("start", start))
+# ================= FLASK SETUP =================
+db = FinanceDB()
+flask_app = Flask(__name__)
 
-USE_WEBHOOK = os.getenv("USE_WEBHOOK", "false").lower() == "true"
+@flask_app.route("/")
+def index():
+    return render_template("index.html")
 
-if __name__ == "__main__":
-    print("Bot is running…")
-    if USE_WEBHOOK:
-        app.run_webhook(
-            listen="0.0.0.0",
-            port=PORT,
-            webhook_url=WEBHOOK_URL
-        )
+# Define an initialization function
+async def init_bot():
+    if not tg_app.running:
+        await tg_app.initialize()
+        await tg_app.start()
+        print("Bot initialized and started!")
+
+# TELEGRAM WEBHOOK ENDPOINT
+@flask_app.route("/webhook", methods=["POST"])
+async def telegram_webhook():
+    """Receive updates from Telegram and push them to the PTB application"""
+    try:
+        # Ensure the bot is initialized and started
+        # Run the initialization in the current loop
+        await init_bot()
+            
+        json_data = request.get_json(force=True)
+        update = Update.de_json(json_data, tg_app.bot)
+        
+        # Process the update
+        await tg_app.process_update(update)
+        return "OK", 200
+    except Exception as e:
+        print(f"Error processing update: {e}")
+        return "Error", 500
+
+# Your existing API routes
+@flask_app.route("/api/balance")
+def api_balance():
+    user_id = request.args.get("user_id", type=int)
+    return jsonify({"balance": db.get_balance(user_id)})
+
+@flask_app.route("/api/add", methods=["POST"])
+def api_add():
+    data = request.json
+    user_id = data["user_id"]
+    amount = float(data["amount"])
+    note = data.get("note", "")
+    if amount >= 0:
+        db.add_transaction(user_id, "in", amount, note)
     else:
-        app.run_polling()
+        db.add_transaction(user_id, "out", abs(amount), note)
+    return jsonify({"status": "ok"})
+
+# ================= RUNNER =================
+if __name__ == "__main__":
+    print(f"Starting server on port {PORT}...")
+    
+    # NOTE: To use 'async' routes in Flask, you must use Flask 2.3+ 
+    # or run the app with an ASGI server like Hypercorn or Uvicorn.
+    # For local testing, this works:
+    flask_app.run(host="0.0.0.0", port=PORT)
