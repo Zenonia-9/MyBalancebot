@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone, UTC
 import zoneinfo
 import csv
 import io
@@ -373,9 +373,9 @@ async def delete_ui_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
         conn = db.get_connection()
         cursor = conn.cursor()
-
+        ph = "%s" if db.is_postgres else "?"
         cursor.execute(
-            "DELETE FROM transactions WHERE id=? AND user_id=?",
+            f"DELETE FROM transactions WHERE id={ph} AND user_id={ph}",
             (t_id, user_id)
         )
 
@@ -397,7 +397,7 @@ async def handle_summary(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     args = context.args
-    now = datetime.now()
+    now = datetime.now(UTC)
 
     # 👉 If no args → show buttons
     if not args:
@@ -405,65 +405,51 @@ async def handle_summary(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     conn = db.get_connection()
     cursor = conn.cursor()
+    ph = "%s" if db.is_postgres else "?"
 
-    query = """
+    query = f"""
         SELECT 
             COALESCE(SUM(CASE WHEN type='in' THEN amount ELSE 0 END),0),
             COALESCE(SUM(CASE WHEN type='out' THEN amount ELSE 0 END),0)
         FROM transactions
-        WHERE user_id=?
+        WHERE user_id={ph}
     """
 
     params = [user_id]
     title = ""
 
-    # ======================
-    # YEARLY
-    # ======================
     if args[0].lower() == "year":
         if len(args) == 2:
             year = int(args[1])
-            start = datetime(year, 1, 1)
-            end = datetime(year, 12, 31)
+            start = datetime(year, 1, 1, tzinfo=UTC).strftime("%Y-%m-%d %H:%M:%S")
+            end   = datetime(year, 12, 31, 23, 59, 59, tzinfo=UTC).strftime("%Y-%m-%d %H:%M:%S")
             title = f"Year {year}"
-
-            query += " AND created_at BETWEEN ? AND ?"
+            query += f" AND created_at BETWEEN {ph} AND {ph}"
             params.extend([start, end])
         else:
             title = "All Time"
 
-    # ======================
-    # MONTHLY
-    # ======================
     elif args[0].lower() == "month":
         if len(args) >= 2:
             try:
                 month = int(args[1])
                 year = int(args[2]) if len(args) == 3 else now.year
-
-                start = datetime(year, month, 1)
-
+                start = datetime(year, month, 1, tzinfo=UTC)
                 if month == 12:
-                    end = datetime(year + 1, 1, 1)
+                    end = datetime(year + 1, 1, 1, tzinfo=UTC)
                 else:
-                    end = datetime(year, month + 1, 1)
-
-                title = f"{start.strftime('%B %Y')}"
-
-                query += " AND created_at BETWEEN ? AND ?"
-                params.extend([start, end])
-
+                    end = datetime(year, month + 1, 1, tzinfo=UTC)
+                title = start.strftime("%B %Y")
+                query += f" AND created_at BETWEEN {ph} AND {ph}"
+                params.extend([start.strftime("%Y-%m-%d %H:%M:%S"), end.strftime("%Y-%m-%d %H:%M:%S")])
             except:
                 await update.message.reply_text("Invalid month/year format.")
                 return
         else:
             await update.message.reply_text(
-                "Usage:\n"
-                "/summary month <month> [year]\n"
-                "Example: /summary month 4 2025"
+                "Usage:\n/summary month <month> [year]\nExample: /summary month 4 2025"
             )
             return
-
     else:
         await update.message.reply_text("Invalid usage.")
         return
@@ -508,36 +494,35 @@ async def summary_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query_cb.answer()
 
     user_id = query_cb.from_user.id
-    now = datetime.now()
+    now = datetime.now(UTC)
 
     conn = db.get_connection()
     cursor = conn.cursor()
+    ph = "%s" if db.is_postgres else "?"
 
-    base_query = """
+    base_query = f"""
         SELECT 
             COALESCE(SUM(CASE WHEN type='in' THEN amount ELSE 0 END),0),
             COALESCE(SUM(CASE WHEN type='out' THEN amount ELSE 0 END),0)
         FROM transactions
-        WHERE user_id=?
+        WHERE user_id={ph}
     """
 
     params = [user_id]
     title = ""
 
     if query_cb.data == "summary_month":
-        start = now.replace(day=1)
-        end = now
+        start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0).strftime("%Y-%m-%d %H:%M:%S")
+        end   = now.strftime("%Y-%m-%d %H:%M:%S")
         title = now.strftime("%B %Y")
-
-        base_query += " AND created_at BETWEEN ? AND ?"
+        base_query += f" AND created_at BETWEEN {ph} AND {ph}"
         params.extend([start, end])
 
     elif query_cb.data == "summary_year":
-        start = datetime(now.year, 1, 1)
-        end = datetime(now.year, 12, 31)
+        start = datetime(now.year, 1, 1, tzinfo=UTC).strftime("%Y-%m-%d %H:%M:%S")
+        end   = datetime(now.year, 12, 31, 23, 59, 59, tzinfo=UTC).strftime("%Y-%m-%d %H:%M:%S")
         title = f"Year {now.year}"
-
-        base_query += " AND created_at BETWEEN ? AND ?"
+        base_query += f" AND created_at BETWEEN {ph} AND {ph}"
         params.extend([start, end])
 
     elif query_cb.data == "summary_all":
@@ -567,11 +552,11 @@ async def handle_export(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     conn = db.get_connection()
     cursor = conn.cursor()
-
-    cursor.execute("""
+    ph = "%s" if db.is_postgres else "?"
+    cursor.execute(f"""
         SELECT id, type, amount, note, created_at
         FROM transactions
-        WHERE user_id=?
+        WHERE user_id={ph}
         ORDER BY created_at ASC
     """, (user_id,))
 
@@ -659,25 +644,18 @@ async def handle_import(update, context):
     cursor = conn.cursor()
 
     try:
-        # 🗑 STEP 1: Delete old data ONLY after validation
-        cursor.execute("DELETE FROM transactions WHERE user_id=?", (user_id,))
+        ph = "%s" if db.is_postgres else "?"
+        cursor.execute(f"DELETE FROM transactions WHERE user_id={ph}", (user_id,))
 
-        # 📦 STEP 2: Prepare batch data
         data = [
-            (
-                user_id,
-                row["type"],
-                float(row["amount"]),
-                row["note"],
-                row["created_at"]
-            )
+            (user_id, row["type"], float(row["amount"]), row["note"], row["created_at"])
             for row in rows
         ]
 
-        # ⚡ STEP 3: Bulk insert (faster + cheaper CPU)
-        cursor.executemany("""
+        ins = "%s" if db.is_postgres else "?"
+        cursor.executemany(f"""
             INSERT INTO transactions (user_id, type, amount, note, created_at)
-            VALUES (?, ?, ?, ?, ?)
+            VALUES ({ins},{ins},{ins},{ins},{ins})
         """, data)
 
         conn.commit()

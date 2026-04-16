@@ -130,7 +130,25 @@ function renderBalance(data) {
 async function submitTransaction() {
   const rawAmount = document.getElementById("amount-input").value.trim();
   const note = document.getElementById("note-input").value.trim();
+  const dtLocal = document.getElementById("datetime-input").value; // "YYYY-MM-DDTHH:MM"
   if (!rawAmount) { showToast("⚠️ Enter an amount"); return; }
+
+  // Convert local datetime to UTC SQL string, or null to let DB default
+  let created_at = null;
+  if (dtLocal) {
+    const localDate = new Date(dtLocal); // browser treats datetime-local as local time
+    const now = new Date(); // Current time
+
+    // --- FUTURE DATE CHECK ---
+    if (localDate > now) {
+      showToast("⚠️ Future dates are not allowed");
+      return; // Stop the function here
+    }
+
+    const pad = n => String(n).padStart(2, "0");
+    created_at = `${localDate.getUTCFullYear()}-${pad(localDate.getUTCMonth()+1)}-${pad(localDate.getUTCDate())} ` +
+                 `${pad(localDate.getUTCHours())}:${pad(localDate.getUTCMinutes())}:${pad(localDate.getUTCSeconds())}`;
+  }
 
   const btn = document.querySelector(".btn-submit");
   btn.disabled = true;
@@ -140,12 +158,13 @@ async function submitTransaction() {
     const res = await fetch("/api/add", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ user_id: USER_ID, amount: txType === "in" ? rawAmount : `-${rawAmount}`, note })
+      body: JSON.stringify({ user_id: USER_ID, amount: txType === "in" ? rawAmount : `-${rawAmount}`, note, created_at })
     });
     const data = await res.json();
     if (data.status === "ok") {
       document.getElementById("amount-input").value = "";
       document.getElementById("note-input").value = "";
+      document.getElementById("datetime-input").value = "";
       showToast(txType === "in" ? "✅ Income added!" : "✅ Expense added!");
       bustCache(`bal_${USER_ID}`, `hist_${USER_ID}_0`);
       loadBalance(true);

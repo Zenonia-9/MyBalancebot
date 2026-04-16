@@ -196,6 +196,7 @@
       font-size: 15px;
       outline: none;
       transition: border-color 0.2s;
+      color-scheme: light dark;
     }
     .input-group input:focus { border-color: var(--accent); }
 
@@ -506,6 +507,10 @@
       <div class="input-group">
         <label>Note (optional)</label>
         <input id="note-input" type="text" placeholder="e.g. Salary, Coffee..." />
+      </div>
+      <div class="input-group">
+        <label>Date &amp; Time (optional — defaults to now)</label>
+        <input id="datetime-input" type="datetime-local" />
       </div>
       <button class="btn-submit" onclick="submitTransaction()">Add Transaction</button>
     </div>

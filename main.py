@@ -89,10 +89,11 @@ def api_add():
     except ValueError:
         return jsonify({"status": "error", "error": "Invalid amount"}), 400
     note = data.get("note") or None
+    created_at = data.get("created_at") or None  # UTC string or None
     if amount >= 0:
-        db.add_transaction(user_id, "in", amount, note)
+        db.add_transaction(user_id, "in", amount, note, created_at)
     else:
-        db.add_transaction(user_id, "out", abs(amount), note)
+        db.add_transaction(user_id, "out", abs(amount), note, created_at)
     return jsonify({"status": "ok"})
 
 @flask_app.route("/api/history")
@@ -114,7 +115,8 @@ def api_delete():
     t_id = data["transaction_id"]
     conn = db.get_connection()
     cursor = conn.cursor()
-    cursor.execute("DELETE FROM transactions WHERE id=? AND user_id=?", (t_id, user_id))
+    ph = "%s" if db.is_postgres else "?"
+    cursor.execute(f"DELETE FROM transactions WHERE id={ph} AND user_id={ph}", (t_id, user_id))
     affected = cursor.rowcount
     conn.commit()
     conn.close()
@@ -124,30 +126,30 @@ def api_delete():
 
 @flask_app.route("/api/summary")
 def api_summary():
-    from datetime import datetime
+    from datetime import datetime, UTC
     user_id = request.args.get("user_id", type=int)
     period = request.args.get("period", "month")
-    now = datetime.utcnow()
+    now = datetime.now(UTC)
 
     conn = db.get_connection()
     cursor = conn.cursor()
-    base = """
+    ph = "%s" if db.is_postgres else "?"
+    base = f"""
         SELECT
             COALESCE(SUM(CASE WHEN type='in' THEN amount ELSE 0 END),0),
             COALESCE(SUM(CASE WHEN type='out' THEN amount ELSE 0 END),0)
-        FROM transactions WHERE user_id=?
+        FROM transactions WHERE user_id={ph}
     """
     params = [user_id]
 
     if period == "month":
-        start = now.replace(day=1, hour=0, minute=0, second=0)
-        base += " AND created_at >= ?"
-        params.append(start)
+        start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+        base += f" AND created_at >= {ph}"
+        params.append(start.strftime("%Y-%m-%d %H:%M:%S"))
     elif period == "year":
-        start = now.replace(month=1, day=1, hour=0, minute=0, second=0)
-        base += " AND created_at >= ?"
-        params.append(start)
-    # "all" → no filter
+        start = now.replace(month=1, day=1, hour=0, minute=0, second=0, microsecond=0)
+        base += f" AND created_at >= {ph}"
+        params.append(start.strftime("%Y-%m-%d %H:%M:%S"))
 
     cursor.execute(base, params)
     total_in, total_out = cursor.fetchone()
@@ -170,9 +172,9 @@ def api_save_settings():
 
 @flask_app.route("/api/summary/monthly")
 def api_summary_monthly():
-    from datetime import datetime
+    from datetime import datetime, UTC
     user_id = request.args.get("user_id", type=int)
-    year = request.args.get("year", datetime.utcnow().year, type=int)
+    year = request.args.get("year", datetime.now(UTC).year, type=int)
     rows = db.get_monthly_breakdown(user_id, year)
     return jsonify({"year": year, "rows": [{"month": r[0], "total_in": r[1], "total_out": r[2]} for r in rows]})
 

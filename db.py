@@ -57,13 +57,21 @@ class FinanceDB:
             return psycopg2.connect(self.db_url)
         return sqlite3.connect(self.db_url)
 
-    def add_transaction(self, user_id: int, t_type: str, amount: float, note: str = None):
+    def add_transaction(self, user_id: int, t_type: str, amount: float, note: str = None, created_at: str = None):
         conn = self.get_connection()
         cursor = conn.cursor()
-        cursor.execute(
-            "INSERT INTO transactions (user_id, type, amount, note) VALUES (?, ?, ?, ?)",
-            (user_id, t_type, amount, note)
-        )
+        if created_at:
+            ph = "%s" if self.is_postgres else "?"
+            cursor.execute(
+                f"INSERT INTO transactions (user_id, type, amount, note, created_at) VALUES ({ph},{ph},{ph},{ph},{ph})",
+                (user_id, t_type, amount, note, created_at)
+            )
+        else:
+            ph = "%s" if self.is_postgres else "?"
+            cursor.execute(
+                f"INSERT INTO transactions (user_id, type, amount, note) VALUES ({ph},{ph},{ph},{ph})",
+                (user_id, t_type, amount, note)
+            )
         conn.commit()
         conn.close()
 
@@ -73,12 +81,13 @@ class FinanceDB:
     def get_balance_full(self, user_id: int):
         conn = self.get_connection()
         cursor = conn.cursor()
-        cursor.execute("""
+        ph = "%s" if self.is_postgres else "?"
+        cursor.execute(f"""
             SELECT
                 COALESCE(SUM(CASE WHEN type='in' THEN amount ELSE 0 END),0),
                 COALESCE(SUM(CASE WHEN type='out' THEN amount ELSE 0 END),0)
             FROM transactions
-            WHERE user_id=?
+            WHERE user_id={ph}
         """, (user_id,))
         total_in, total_out = cursor.fetchone()
         conn.close()
@@ -87,13 +96,12 @@ class FinanceDB:
     def get_transaction(self, user_id: int, t_id: int):
         conn = self.get_connection()
         cursor = conn.cursor()
-
-        cursor.execute("""
+        ph = "%s" if self.is_postgres else "?"
+        cursor.execute(f"""
             SELECT id, type, amount, note, created_at
             FROM transactions
-            WHERE user_id=? AND id=?
+            WHERE user_id={ph} AND id={ph}
         """, (user_id, t_id))
-
         row = cursor.fetchone()
         conn.close()
         return row
@@ -184,15 +192,14 @@ class FinanceDB:
     def get_history(self, user_id: int, limit: int = 20, offset: int = 0):
         conn = self.get_connection()
         cursor = conn.cursor()
-
-        cursor.execute("""
+        ph = "%s" if self.is_postgres else "?"
+        cursor.execute(f"""
             SELECT id, type, amount, note, created_at
             FROM transactions
-            WHERE user_id=?
+            WHERE user_id={ph}
             ORDER BY created_at DESC
-            LIMIT ? OFFSET ?
+            LIMIT {ph} OFFSET {ph}
         """, (user_id, limit, offset))
-
         rows = cursor.fetchall()
         conn.close()
         return rows
