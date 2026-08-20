@@ -227,9 +227,40 @@ function buildTxItem(tx) {
       <div class="tx-date">#${tx.id} · ${fmtDate(tx.created_at)}</div>
     </div>
     <div class="tx-amount ${isIn ? "income" : "expense"}">${isIn ? "+" : "-"}${fmt(tx.amount)}</div>
-    <button class="tx-delete" onclick="openDeleteModal(${tx.id}, '${(tx.note || "").replace(/'/g, "\\'")}', ${tx.amount}, '${tx.type}')">🗑</button>
+    <button class="tx-edit" aria-label="Edit transaction" onclick="openEditModal(${tx.id})">✎</button>
+    <button class="tx-delete" aria-label="Delete transaction" onclick="openDeleteModal(${tx.id}, '${(tx.note || "").replace(/'/g, "\\'")}', ${tx.amount}, '${tx.type}')">🗑</button>
   `;
   return div;
+}
+
+async function openEditModal(id) {
+  const res = await fetch(`/api/history?user_id=${USER_ID}&limit=50&offset=0`);
+  const data = await res.json();
+  const tx = data.transactions.find(item => item.id === id);
+  if (!tx) { showToast("❌ Transaction not found"); return; }
+  document.getElementById("edit-transaction-id").value = tx.id;
+  document.getElementById("edit-type").value = tx.type;
+  document.getElementById("edit-amount").value = tx.amount;
+  document.getElementById("edit-note").value = tx.note || "";
+  document.getElementById("edit-datetime").value = tx.created_at.replace(" ", "T").slice(0, 16);
+  document.getElementById("edit-modal").classList.add("show");
+}
+
+function closeEditModal() { document.getElementById("edit-modal").classList.remove("show"); }
+
+async function saveEdit() {
+  const localDate = new Date(document.getElementById("edit-datetime").value);
+  if (!Number.isFinite(localDate.getTime()) || localDate > new Date()) { showToast("⚠️ Invalid or future date"); return; }
+  const pad = n => String(n).padStart(2, "0");
+  const created_at = `${localDate.getUTCFullYear()}-${pad(localDate.getUTCMonth()+1)}-${pad(localDate.getUTCDate())} ${pad(localDate.getUTCHours())}:${pad(localDate.getUTCMinutes())}:${pad(localDate.getUTCSeconds())}`;
+  const res = await fetch("/api/update", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({
+    user_id: USER_ID, transaction_id: Number(document.getElementById("edit-transaction-id").value), type: document.getElementById("edit-type").value,
+    amount: document.getElementById("edit-amount").value, note: document.getElementById("edit-note").value.trim(), created_at
+  })});
+  const data = await res.json();
+  if (data.status !== "ok") { showToast("❌ " + (data.error || "Failed")); return; }
+  closeEditModal(); showToast("✅ Transaction updated");
+  bustCache(`bal_${USER_ID}`, `hist_${USER_ID}_0`); loadBalance(true); historyOffset = 0; loadHistory();
 }
 
 function loadMore() { loadHistory(true); }

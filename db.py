@@ -93,6 +93,39 @@ class FinanceDB:
         conn.close()
         return total_in - total_out, total_in, total_out
 
+    def get_current_month_breakdown(self, user_id: int):
+        """Return income and expense totals for the current UTC calendar month."""
+        from datetime import datetime, UTC
+        now = datetime.now(UTC)
+        start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        ph = "%s" if self.is_postgres else "?"
+        cursor.execute(f"""
+            SELECT
+                COALESCE(SUM(CASE WHEN type='in' THEN amount ELSE 0 END),0),
+                COALESCE(SUM(CASE WHEN type='out' THEN amount ELSE 0 END),0)
+            FROM transactions
+            WHERE user_id={ph} AND created_at >= {ph}
+        """, (user_id, start.strftime("%Y-%m-%d %H:%M:%S")))
+        row = cursor.fetchone()
+        conn.close()
+        return row[0], row[1]
+
+    def update_transaction(self, user_id: int, t_id: int, t_type: str, amount: float, note: str, created_at: str):
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        ph = "%s" if self.is_postgres else "?"
+        cursor.execute(f"""
+            UPDATE transactions
+            SET type={ph}, amount={ph}, note={ph}, created_at={ph}
+            WHERE id={ph} AND user_id={ph}
+        """, (t_type, amount, note, created_at, t_id, user_id))
+        affected = cursor.rowcount
+        conn.commit()
+        conn.close()
+        return affected
+
     def get_transaction(self, user_id: int, t_id: int):
         conn = self.get_connection()
         cursor = conn.cursor()

@@ -70,9 +70,28 @@ async def telegram_webhook():
 def api_balance():
     user_id = request.args.get("user_id", type=int)
     balance, total_in, total_out = db.get_balance_full(user_id)
-    resp = jsonify({"balance": balance, "total_in": total_in, "total_out": total_out})
+    month_in, month_out = db.get_current_month_breakdown(user_id)
+    resp = jsonify({"balance": balance, "total_in": month_in, "total_out": month_out})
     resp.headers["Cache-Control"] = "no-store"
     return resp
+
+@flask_app.route("/api/update", methods=["POST"])
+def api_update():
+    data = request.json or {}
+    try:
+        user_id = int(data["user_id"])
+        t_id = int(data["transaction_id"])
+        t_type = data["type"] if data["type"] in ("in", "out") else None
+        amount = float(data["amount"])
+        created_at = data["created_at"]
+        if not t_type or amount <= 0 or not created_at:
+            raise ValueError
+    except (KeyError, TypeError, ValueError):
+        return jsonify({"status": "error", "error": "Invalid transaction data"}), 400
+    affected = db.update_transaction(user_id, t_id, t_type, amount, data.get("note") or None, created_at)
+    if not affected:
+        return jsonify({"status": "error", "error": "Not found"}), 404
+    return jsonify({"status": "ok"})
 
 @flask_app.route("/api/add", methods=["POST"])
 def api_add():
